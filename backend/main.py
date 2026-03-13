@@ -108,7 +108,7 @@ Results sample:
 {json.dumps(preview, indent=2)}
 """
     
-    api_key = os.getenv("GEMINI_API_KEY") 
+    api_key = os.getenv("AIzaSyCfUfT0uoYRh1afTUtBvcTBdBu99A1Hbro") 
     if not api_key:
         return "Chart generated successfully! (Add GEMINI_API_KEY to Render to unlock smart summaries)."
 
