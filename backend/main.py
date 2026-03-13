@@ -52,8 +52,7 @@ def get_db():
 # ---------------- APP SETUP ----------------
 LMSTUDIO_MODEL_NAME = os.getenv("LMSTUDIO_MODEL_NAME", "meta-llama-3-8b-instruct")
 LMSTUDIO_BASE_URL = os.getenv("LMSTUDIO_BASE_URL", "http://127.0.0.1:1234/v1")
-N8N_INTENT_URL = os.getenv("N8N_INTENT_URL", "http://localhost:5678/webhook/api-gateway")
-
+N8N_INTENT_URL = os.getenv("N8N_INTENT_URL", "https://kori-conferval-nonverminously.ngrok-free.dev/webhook/api-gateway")
 app = FastAPI()
 
 app.add_middleware(
