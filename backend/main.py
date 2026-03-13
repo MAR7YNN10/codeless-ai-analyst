@@ -291,7 +291,7 @@ async def upload_csv(file: UploadFile = File(...), user_id: str = Form(...)):
     return UploadResponse(session_id=session_id, columns=df.columns.tolist(), dtypes=df.dtypes.apply(str).to_dict())
 
 @app.post("/analyze", response_model=AnalyzeResponse)
-def analyze(req: AnalyzeRequest):  # <--- Removed 'async' here!
+def analyze(req: AnalyzeRequest):  
     user_folder = os.path.join(UPLOAD_DIR, req.user_id)
     file_path = os.path.join(user_folder, f"{req.session_id}.csv")
     
@@ -302,31 +302,38 @@ def analyze(req: AnalyzeRequest):  # <--- Removed 'async' here!
     schema = {"columns": list(df.columns), "dtypes": df.dtypes.apply(str).to_dict(), "sample_data": df.head(10).to_dict(orient="records"), "total_rows": len(df)}
     payload_for_n8n = {"question": req.question, "schema_json": schema, "previous_intent": req.previous_intent}
     
+    n8n_summary = "Here is the chart you requested." # Fallback summary
+    
     try:
-        # --- FIX 1: ADD HEADERS TO BYPASS NGROK'S SECURITY SCREEN ---
         headers = {"ngrok-skip-browser-warning": "true"}
-        
         n8n_resp = requests.post(N8N_INTENT_URL, json=payload_for_n8n, headers=headers, timeout=45)
         n8n_resp.raise_for_status()
-        intent = n8n_resp.json()
-        print(f"\n[DEBUG] AI INTENT: {json.dumps(intent, indent=2)}\n")
         
+        raw_data = n8n_resp.json()
+        print(f"\n[DEBUG] RAW N8N RESPONSE: {json.dumps(raw_data, indent=2)}\n")
+        
+        # --- THE MAGIC FIX: UNNEST THE JSON ---
+        if "intent" in raw_data and isinstance(raw_data["intent"], dict):
+            intent = raw_data["intent"]  # Unwrap the chart settings
+            n8n_summary = raw_data.get("summary", n8n_summary) # Grab the n8n summary!
+        else:
+            intent = raw_data
+            
     except Exception as e:
-        # --- FIX 2: PRINT THE ACTUAL ERROR SO WE CAN SEE IT IN RENDER LOGS ---
         print(f"\n[CRITICAL N8N ERROR] Failed to connect or parse: {e}")
         if 'n8n_resp' in locals():
             print(f"[CRITICAL N8N ERROR] Raw response: {n8n_resp.text}\n")
-            
-        intent = {"metric": df.columns[0], "aggregation": "count", "group_by": [df.columns[1]] if len(df.columns) > 1 else [], "filters": [], "chart_type": "bar", "_processed_by": "fallback_error_handler"}
+        intent = {"metric": df.columns[0], "aggregation": "count", "group_by": [df.columns[1]] if len(df.columns) > 1 else [], "filters": [], "chart_type": "bar", "_processed_by": "fallback"}
         
     try: 
         result_df, chart = apply_intent(df, intent)
     except Exception as e: 
         raise HTTPException(status_code=500, detail=f"Logic error: {e}")
         
-    summary = summarize_results(result_df, req.question, intent)
     preview = result_df.head(10).to_dict(orient="records")
-    return AnalyzeResponse(summary=summary, chart=chart, table_preview=preview, intent=intent)
+    
+    # --- WE SKIP PYTHON'S BROKEN LLM CALL AND JUST USE N8N'S SUMMARY ---
+    return AnalyzeResponse(summary=n8n_summary, chart=chart, table_preview=preview, intent=intent)
 
 @app.post("/save_thread")
 def save_thread(thread: ThreadCreate, db: Session = Depends(get_db)):
