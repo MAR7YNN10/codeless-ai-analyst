@@ -9,9 +9,11 @@ import {
   signInWithPopup, 
   signOut, 
   onAuthStateChanged,
-  createUserWithEmailAndPassword, // Add this
-  signInWithEmailAndPassword      // Add this
+  createUserWithEmailAndPassword, 
+  signInWithEmailAndPassword      
 } from "firebase/auth";
+
+const API_BASE_URL = "https://codeless-ai-analyst.onrender.com";
 
 export default function App() {
   const [csv, setCsv] = useState(null);
@@ -28,27 +30,23 @@ export default function App() {
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [isRegistering, setIsRegistering] = useState(false); // To toggle between Login and Sign Up
+  const [isRegistering, setIsRegistering] = useState(false);
 
   const feedEndRef = useRef(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
 
-  // ==========================================
-  // --- NEW: AUTHENTICATION STATE & LOGIC ---
-  // ==========================================
   const [user, setUser] = useState(null);
   const [isAuthLoading, setIsAuthLoading] = useState(true);
+  
 
-  // Check if user is already logged in when the app loads
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
       setUser(currentUser);
       setIsAuthLoading(false);
     });
-    return () => unsubscribe(); // Cleanup subscription
+    return () => unsubscribe(); 
   }, []);
 
-  // Login Function
   const handleGoogleLogin = async () => {
     try {
       await signInWithPopup(auth, googleProvider);
@@ -69,37 +67,29 @@ export default function App() {
       alert(error.message);
     }
   };
-  // ==========================================
 
- // 1. UPDATED: SECURE FETCH (Isolated by User) & CLEANUP
   useEffect(() => {
     if (user) {
-      // We pass the user.uid to tell Python WHO is asking
-      fetch(`http://localhost:8000/get_threads?user_id=${user.uid}`)
+      fetch(`${API_BASE_URL}/get_threads?user_id=${user.uid}`)
         .then(res => res.json())
         .then(data => setSavedThreads(data))
         .catch(err => console.error("Failed to load DB history:", err));
     } else {
-      // THE FIX: If the user logs out, WIPE EVERYTHING clean!
-      setSavedThreads([]); // Clears sidebar
-      setChatFeed([]);     // Clears the charts/chat screen
-      setCsv(null);        // Drops the active file memory
-      setSessionId("");    // Resets the backend session
-      
-      // If you have a state for the active tab or file status, reset that too:
-      // setActiveTab("new"); 
+      setSavedThreads([]); 
+      setChatFeed([]);    
+      setCsv(null);        
+      setSessionId("");    
     }
-  }, [user]); // Re-runs whenever the login state changes
+  }, [user]); 
 
   async function uploadFile() {
     if (!csv) { alert("🚨 Please select a CSV file first!"); return; }
     try {
       const formData = new FormData();
       formData.append("file", csv);
-      // --- NEW: Attach the User ID to the upload ---
       formData.append("user_id", user.uid); 
 
-      const res = await fetch("http://localhost:8000/upload_csv", { 
+      const res = await fetch(`${API_BASE_URL}/upload_csv`, { 
         method: "POST", 
         body: formData 
       });
@@ -118,7 +108,6 @@ export default function App() {
     setCsv(null);
     setSessionId("");
     
-    // SAFETY CHECK: Only clear the value if the input actually exists on screen right now!
     const fileInput = document.getElementById("csv-upload-input");
     if (fileInput) {
       fileInput.value = ""; 
@@ -128,7 +117,6 @@ export default function App() {
   async function analyze(query, isFollowUp) {
     if (!query) return;
     
-    // SAFETY CHECK: Ensure session and user are both active
     if (!sessionId) { alert("Please upload a CSV file first!"); return; }
     if (!user) { alert("You must be logged in to analyze data."); return; }
     
@@ -143,13 +131,13 @@ export default function App() {
     else setFollowUpQuestion(""); 
 
     try {
-      const res = await fetch("http://localhost:8000/analyze", {
+      const res = await fetch(`${API_BASE_URL}/analyze`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ 
           question: query, 
           session_id: sessionId, 
-          user_id: user.uid, // <--- Verified: Matches Python Pydantic Model
+          user_id: user.uid, 
           previous_intent: intentToSend 
         }),
       });
@@ -172,7 +160,6 @@ export default function App() {
       const finalFeed = [...updatedFeed, aiResponse];
       setChatFeed(finalFeed);
       
-      // PASS UID TO THE DATABASE SAVING FUNCTION
       saveThreadToDatabase(query, finalFeed, data.intent || lastIntent, sessionId, false, user.uid);
 
     } catch (error) {
@@ -183,57 +170,49 @@ export default function App() {
     }
   }
 
-  // 2. SAVE/UPDATE TO DATABASE
-  // UPDATED: Now requires userId to ensure the thread belongs to YOU
   async function saveThreadToDatabase(firstQuery, feed, intent, currentSessionId, isPinned, userId) {
-    // Generate or find the thread ID
-    const threadId = chatFeed.length > 0 
+    // FIX: Using feed.length to prevent phantom thread creation
+    const threadId = feed.length > 2 
       ? savedThreads.find(t => t.feed[0]?.text === feed[0]?.text)?.id || Date.now().toString() 
       : Date.now().toString();
     
     const threadData = {
       id: threadId,
-      title: firstQuery.substring(0, 30) + "...",
+      title: feed[0]?.text.substring(0, 30) + "...",
       feed: feed,
       lastIntent: intent,
       sessionId: currentSessionId,
       pinned: isPinned,
-      user_id: userId // <--- 1. Link the record to your ID
+      user_id: userId 
     };
 
     try {
-      await fetch("http://localhost:8000/save_thread", {
+      await fetch(`${API_BASE_URL}/save_thread`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(threadData)
       });
 
-      // 2. Refresh sidebar but ONLY for the current user
-      const res = await fetch(`http://localhost:8000/get_threads?user_id=${userId}`);
+      const res = await fetch(`${API_BASE_URL}/get_threads?user_id=${userId}`);
       setSavedThreads(await res.json());
     } catch (error) {
       console.error("Failed to save to DB", error);
     }
   }
 
-  // 3. UPDATED SMART TOGGLE PIN
   async function togglePin(e, thread) {
     e.stopPropagation();
     
-    // SAFETY CHECK: Ensure the user is logged in so we don't crash looking for user.uid
     if (!user) return;
 
-    // We calculate the new status: if it was true (1), make it false (0)
     const newStatus = thread.pinned ? 0 : 1; 
 
     try {
-      // UPGRADE 1 & 2: Added user_id to the URL and changed method to PUT
-      const response = await fetch(`http://localhost:8000/update_pin/${thread.id}?pinned=${newStatus}&user_id=${user.uid}`, {
-        method: "PUT" // Must match the @app.put in your Python file!
+      const response = await fetch(`${API_BASE_URL}/update_pin/${thread.id}?pinned=${newStatus}&user_id=${user.uid}`, {
+        method: "PUT" 
       });
 
       if (response.ok) {
-        // Update the sidebar UI instantly without a page refresh
         setSavedThreads(prev => prev.map(t => 
           t.id === thread.id ? { ...t, pinned: newStatus } : t
         ));
@@ -245,36 +224,25 @@ export default function App() {
     }
   }
 
-  // 4. SECURE DELETE (User-Specific)
   async function deleteThread(e, id) {
     e.stopPropagation();
     
-    // Safety check: Don't try to delete if not logged in
     if (!user) return;
     if (!window.confirm("Are you sure you want to delete this dashboard?")) return;
 
     try {
-      // 1. Send the DELETE request with the user_id as a query parameter
-      const deleteUrl = `http://localhost:8000/delete_thread/${id}?user_id=${user.uid}`;
+      // FIX: URL defined first
+      const deleteUrl = `${API_BASE_URL}/delete_thread/${id}?user_id=${user.uid}`;
       
       const response = await fetch(deleteUrl, { method: "DELETE" });
 
-      if (!response.ok) {
-        throw new Error("Unauthorized or Thread not found");
-      }
+      if (!response.ok) throw new Error("Unauthorized or Thread not found");
 
-      // 2. Optimized Refresh: Fetch only YOUR threads after deletion
-      const res = await fetch(`http://localhost:8000/get_threads?user_id=${user.uid}`);
+      const res = await fetch(`${API_BASE_URL}/get_threads?user_id=${user.uid}`);
       const updated = await res.json();
-      
       setSavedThreads(updated);
 
-      // 3. UI Cleanup: If we deleted the active chat, start a fresh one
-      if (chatFeed.length > 0) {
-        // You can check if the current sessionId matches the deleted thread's sessionId
-        // For simplicity, we can just start a new chat if the sidebar is now empty
-        if (updated.length === 0) startNewChat();
-      }
+      if (updated.length === 0) startNewChat();
 
       alert("✅ Dashboard deleted successfully.");
     } catch (error) {
@@ -283,47 +251,35 @@ export default function App() {
     }
   }
 
-  // 5. SECURE RENAME (User-Specific)
   async function renameThread(e, id, currentTitle) {
-    e.stopPropagation(); // Stops the thread from opening when you click the pencil
-    
-    // 1. Safety check: Ensure user is logged in
+    e.stopPropagation();
     if (!user) return;
 
-    // 2. Open prompt
     const newTitle = window.prompt("Rename this dashboard:", currentTitle);
-    
-    // 3. Validation
     if (!newTitle || newTitle.trim() === "" || newTitle === currentTitle) return;
 
     try {
-      // 4. Secure Fetch: Pass user.uid as a query parameter
-      const res = await fetch(`http://localhost:8000/rename_thread/${id}?user_id=${user.uid}`, {
+      const res = await fetch(`${API_BASE_URL}/rename_thread/${id}?user_id=${user.uid}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ title: newTitle.trim() })
       });
 
-      if (!res.ok) {
-        throw new Error("Unauthorized or server error");
-      }
+      if (!res.ok) throw new Error("Unauthorized or server error");
       
-      // 5. OPTIMISTIC UI UPDATE: 
-      // Instead of fetching all threads again, we just update the specific one in memory.
-      // This makes the rename feel instant!
       setSavedThreads(prev => prev.map(thread => 
         thread.id === id ? { ...thread, title: newTitle.trim() } : thread
       ));
-
     } catch (error) {
       console.error("Failed to rename", error);
-      alert("❌ Rename failed: You might not have permission or the server is down.");
+      alert("❌ Rename failed.");
     }
   }
 
   function startNewChat() {
     setChatFeed([]);
     setLastIntent(null);
+    setSessionId("");
   }
 
   function loadOldThread(thread) {
@@ -332,12 +288,6 @@ export default function App() {
     setSessionId(thread.sessionId); 
   }
 
-  // ==========================================
-  // RENDER UI
-  // ==========================================
-  // ==========================================
-  // 1. GATEKEEPER: THE LOADING SPINNER
-  // ==========================================
   if (isAuthLoading) {
     return (
       <div className="flex items-center justify-center h-screen w-screen bg-slate-900">
@@ -346,9 +296,6 @@ export default function App() {
     );
   }
 
-  // ==========================================
-  // 2. GATEKEEPER: THE LOGIN SCREEN
-  // ==========================================
   if (!user) {
     return (
       <div className="flex items-center justify-center h-screen w-screen bg-slate-900 font-sans p-4">
@@ -358,7 +305,6 @@ export default function App() {
             <p className="text-slate-400">{isRegistering ? "Create your analyst account" : "Secure Enterprise Analytics"}</p>
           </div>
 
-          {/* EMAIL/PASSWORD FORM */}
           <form onSubmit={handleEmailAuth} className="space-y-4 mb-6">
             <div>
               <label className="block text-xs font-bold text-slate-500 uppercase mb-1 tracking-wider">Email Address</label>
@@ -396,13 +342,11 @@ export default function App() {
             </div>
           </form>
 
-          {/* DIVIDER */}
           <div className="relative my-8 text-center">
             <hr className="border-slate-700" />
             <span className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-slate-800 px-4 text-xs text-slate-500 uppercase tracking-widest font-semibold">Or</span>
           </div>
 
-          {/* SOCIAL LOGIN */}
           <div className="grid grid-cols-2 gap-4">
             <button 
               type="button"
@@ -420,22 +364,13 @@ export default function App() {
       </div>
     );
   }
-  
 
-  // ==========================================
-  // 3. THE ENTERPRISE DASHBOARD (Only visible if logged in!)
-  // ==========================================
-  
-  
   return (
-    <>  {/* <--- ADD THIS OPENING FRAGMENT HERE */}
-    
     <div className="flex h-screen w-screen bg-slate-50 font-sans overflow-hidden">
       
       {/* 1. DARK ENTERPRISE SIDEBAR */}
       <div className={`flex flex-col bg-slate-900 text-slate-300 transition-all duration-300 ${isSidebarOpen ? 'w-72' : 'w-0 overflow-hidden'}`}>
         
-        {/* Scrollable Queries Section */}
         <div className="flex-1 p-5 overflow-y-auto pr-1">
           <button 
             onClick={startNewChat} 
@@ -448,51 +383,47 @@ export default function App() {
           <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3 whitespace-nowrap">Past Queries</h4>
           
           <div className="space-y-2">
-  {savedThreads.map(thread => (
-    <div 
-      key={thread.id} 
-      onClick={() => loadOldThread(thread)} 
-      className="group flex items-center justify-between p-3 bg-slate-800 hover:bg-slate-700 rounded-lg cursor-pointer transition-colors border border-slate-700 hover:border-slate-600 shadow-sm"
-    >
-      <span className="text-sm font-medium text-slate-200 truncate max-w-[140px]">
-        {thread.pinned ? "📌 " : ""}{thread.title}
-      </span>
-      
-      {/* Action Buttons: Pin, Rename, & Delete */}
-      <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-        {/* Toggle Pin */}
-        <button 
-          onClick={(e) => togglePin(e, thread)} 
-          className={`p-1 transition-colors ${thread.pinned ? 'text-yellow-400' : 'text-slate-400 hover:text-yellow-400'}`} 
-          title={thread.pinned ? "Unpin" : "Pin"}
-        >
-          📌
-        </button>
+            {savedThreads.map(thread => (
+              <div 
+                key={thread.id} 
+                onClick={() => loadOldThread(thread)} 
+                className="group flex items-center justify-between p-3 bg-slate-800 hover:bg-slate-700 rounded-lg cursor-pointer transition-colors border border-slate-700 hover:border-slate-600 shadow-sm"
+              >
+                <span className="text-sm font-medium text-slate-200 truncate max-w-[140px]">
+                  {thread.pinned ? "📌 " : ""}{thread.title}
+                </span>
+                
+                <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                  <button 
+                    onClick={(e) => togglePin(e, thread)} 
+                    className={`p-1 transition-colors ${thread.pinned ? 'text-yellow-400' : 'text-slate-400 hover:text-yellow-400'}`} 
+                    title={thread.pinned ? "Unpin" : "Pin"}
+                  >
+                    📌
+                  </button>
 
-        {/* Rename Button */}
-        <button 
-          onClick={(e) => renameThread(e, thread.id, thread.title)} 
-          className="p-1 text-slate-400 hover:text-blue-400 transition-colors" 
-          title="Rename"
-        >
-          ✏️
-        </button>
+                  <button 
+                    onClick={(e) => renameThread(e, thread.id, thread.title)} 
+                    className="p-1 text-slate-400 hover:text-blue-400 transition-colors" 
+                    title="Rename"
+                  >
+                    ✏️
+                  </button>
 
-        {/* Secure Delete Button */}
-        <button 
-          onClick={(e) => deleteThread(e, thread.id)} 
-          className="p-1 text-slate-400 hover:text-red-500 transition-colors" 
-          title="Delete Dashboard"
-        >
-          🗑️
-        </button>
-      </div>
-    </div>
-  ))}
-</div>
+                  <button 
+                    onClick={(e) => deleteThread(e, thread.id)} 
+                    className="p-1 text-slate-400 hover:text-red-500 transition-colors" 
+                    title="Delete Dashboard"
+                  >
+                    🗑️
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
 
-        {/* --- NEW USER PROFILE SECTION AT BOTTOM OF SIDEBAR --- */}
+        {/* USER PROFILE SECTION */}
         <div className="p-4 bg-slate-950 border-t border-slate-800 flex items-center gap-3">
           <img src={user.photoURL || "https://ui-avatars.com/api/?name=User"} alt="User" className="w-10 h-10 rounded-full border-2 border-slate-700" />
           <div className="flex-1 min-w-0">
@@ -586,9 +517,7 @@ export default function App() {
             ))
           )}
 
-          {/* ==================================================== */}
-          {/* NEW ENTERPRISE LOADING ANIMATION                     */}
-          {/* ==================================================== */}
+          {/* NEW ENTERPRISE LOADING ANIMATION */}
           {loading && (
             <div className="flex justify-start">
               <div className="w-full max-w-5xl bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden flex flex-col mb-4">
@@ -597,7 +526,6 @@ export default function App() {
                    <strong className="text-slate-700 font-semibold">AI Analyst is thinking...</strong>
                 </div>
                 <div className="p-6 flex items-center gap-3 text-slate-500">
-                  {/* Spinning SVG Loader */}
                   <svg className="animate-spin h-5 w-5 text-indigo-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                     <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
                     <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
@@ -607,8 +535,6 @@ export default function App() {
               </div>
             </div>
           )}
-          {/* ==================================================== */}
-
           <div ref={feedEndRef} />
         </div>
 
@@ -626,7 +552,5 @@ export default function App() {
 
       </div>
     </div>
-    </>
   );
 }
-
