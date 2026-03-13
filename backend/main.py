@@ -97,6 +97,7 @@ class ThreadRename(BaseModel):
 def summarize_results(df: pd.DataFrame, question: str, intent: dict) -> str:
     if df.empty:
         return "No data matched the specified filters."
+        
     preview = df.head(10).to_dict(orient="records")
     prompt = f"""
 You are looking at the final processed data. Provide a concise business summary (3–4 sentences, plain English).
@@ -106,27 +107,32 @@ Question: {question}
 Results sample:
 {json.dumps(preview, indent=2)}
 """
-    gemini_url = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+    
     api_key = os.getenv("GEMINI_API_KEY") 
-    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    if not api_key:
+        return "Chart generated successfully! (Add GEMINI_API_KEY to Render to unlock smart summaries)."
+
+    # USE THE NATIVE GEMINI API TO PREVENT 400 ERRORS
+    gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
+    headers = {"Content-Type": "application/json"}
+    
+    payload = {
+        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+        "systemInstruction": {"parts": [{"text": "You are an expert executive data analyst. You only report on data insights. You never write code."}]},
+        "generationConfig": {"temperature": 0.1}
+    }
+
     try:
-        resp = requests.post(
-            gemini_url,
-            headers=headers,
-            json={
-                "model": "gemini-2.5-flash-lite",
-                "messages": [
-                    {"role": "system", "content": "You are an expert executive data analyst. You only report on data insights. You never write code."},
-                    {"role": "user", "content": prompt},
-                ],
-                "temperature": 0.1,
-            },
-            timeout=15
-        )
+        resp = requests.post(gemini_url, headers=headers, json=payload, timeout=15)
         resp.raise_for_status()
-        return resp.json()["choices"][0]["message"]["content"].strip()
+        
+        # Unpack Native Gemini JSON
+        return resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+        
     except Exception as e:
-        print(f"Summary generation failed: {e}")
+        print(f"\n[SMART SUMMARY ERROR] {e}")
+        if 'resp' in locals():
+            print(f"[RAW GEMINI RESPONSE] {resp.text}\n")
         return "Summary could not be generated, but the chart shows the computed results."
     
 def apply_intent(df: pd.DataFrame, intent: Dict[str, Any]):
@@ -332,8 +338,10 @@ def analyze(req: AnalyzeRequest):
         
     preview = result_df.head(10).to_dict(orient="records")
     
-    # --- WE SKIP PYTHON'S BROKEN LLM CALL AND JUST USE N8N'S SUMMARY ---
-    return AnalyzeResponse(summary=n8n_summary, chart=chart, table_preview=preview, intent=intent)
+    # --- BRING THE SMART SUMMARY BACK ---
+    summary = summarize_results(result_df, req.question, intent)
+    
+    return AnalyzeResponse(summary=summary, chart=chart, table_preview=preview, intent=intent)
 
 @app.post("/save_thread")
 def save_thread(thread: ThreadCreate, db: Session = Depends(get_db)):
